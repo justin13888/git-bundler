@@ -9,8 +9,10 @@ import importlib.util
 def import_git_bundle():
     file_path = Path(__file__).parent.parent / "git-bundle.py"
     spec = importlib.util.spec_from_file_location("git_bundle", str(file_path))
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["git_bundle"] = module
+    assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 

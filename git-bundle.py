@@ -9,11 +9,18 @@ import zipfile
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
+from typing import List, Optional, Dict, Any, Union
 
 
 class Utils:
     @staticmethod
-    def run(cmd, cwd, capture_output=True, ignore_errors=False, verbose=True):
+    def run(
+        cmd: List[str],
+        cwd: Union[str, Path],
+        capture_output: bool = True,
+        ignore_errors: bool = False,
+        verbose: bool = True,
+    ) -> Union[subprocess.CompletedProcess, subprocess.CalledProcessError]:
         if verbose:
             print(f"   [CMD] {' '.join(cmd)}")
         try:
@@ -35,14 +42,16 @@ class Utils:
             return e
 
     @staticmethod
-    def check_dependency(tool):
+    def check_dependency(tool: str) -> None:
         if not shutil.which(tool):
             print(f"❌ Critical Error: '{tool}' is not installed or not in PATH.")
             sys.exit(1)
 
 
 class GitArchiver:
-    def __init__(self, source_url, output_dir, verbose=True):
+    def __init__(
+        self, source_url: str, output_dir: Union[str, Path], verbose: bool = True
+    ) -> None:
         self.source_url = source_url
         self.output_dir = Path(output_dir).resolve()
         self.verbose = verbose
@@ -53,19 +62,19 @@ class GitArchiver:
         Utils.check_dependency("git")
         Utils.check_dependency("git-lfs")
 
-    def _extract_repo_name(self, url):
+    def _extract_repo_name(self, url: str) -> str:
         path = urlparse(url).path
         name = path.split("/")[-1]
         return name[:-4] if name.endswith(".git") else name
 
-    def _resolve_relative_url(self, parent_url, sub_url):
+    def _resolve_relative_url(self, parent_url: str, sub_url: str) -> str:
         if sub_url.startswith("./") or sub_url.startswith("../"):
             if not parent_url.endswith("/"):
                 parent_url += "/"
             return urljoin(parent_url, sub_url)
         return sub_url
 
-    def archive(self):
+    def archive(self) -> str:
         print(f"📦 Starting Archive for: {self.source_url}")
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -103,7 +112,11 @@ class GitArchiver:
                 cwd=bare_repo_path,
                 verbose=self.verbose,
             )
-            print(f"   ✅ Bundle Verification: {verify.stdout.splitlines()[0]}")
+            # verify is Union[CompletedProcess, CalledProcessError]
+            # If ignore_errors=False (default), it would have exited on failure.
+            # So here verify is CompletedProcess.
+            if isinstance(verify, subprocess.CompletedProcess):
+                print(f"   ✅ Bundle Verification: {verify.stdout.splitlines()[0]}")
 
             self._write_manifest(artifacts_dir, lfs_found)
 
@@ -115,7 +128,7 @@ class GitArchiver:
             print(f"\n✨ SUCCESS! Archive created:\n   -> {zip_path}")
             return zip_path
 
-    def _handle_lfs(self, repo_path, output_path):
+    def _handle_lfs(self, repo_path: Path, output_path: Path) -> bool:
         print("   Running 'git lfs fetch --all'...")
         Utils.run(
             ["git", "lfs", "fetch", "--all"],
@@ -132,7 +145,9 @@ class GitArchiver:
             return True
         return False
 
-    def _handle_submodules(self, bare_repo_path, artifact_dir, temp_root):
+    def _handle_submodules(
+        self, bare_repo_path: Path, artifact_dir: Path, temp_root: Path
+    ) -> None:
         cmd = ["git", "config", "--blob", "HEAD:.gitmodules", "--list"]
         result = Utils.run(
             cmd, cwd=bare_repo_path, ignore_errors=True, verbose=self.verbose
@@ -141,8 +156,15 @@ class GitArchiver:
         if result.returncode != 0:
             return
 
-        submodules = {}
-        for line in result.stdout.splitlines():
+        submodules: Dict[str, str] = {}
+        # result can be CompletedProcess or CalledProcessError
+        # Since ignore_errors=True, it returns CalledProcessError on fail.
+        # But we checked returncode != 0 above.
+        stdout = (
+            result.stdout if isinstance(result, subprocess.CompletedProcess) else ""
+        )
+
+        for line in stdout.splitlines():
             if "=" in line:
                 key, value = line.split("=", 1)
                 parts = key.split(".")
@@ -174,7 +196,7 @@ class GitArchiver:
             )
             print(f"      + Bundled submodule: {name}")
 
-    def _write_manifest(self, artifact_dir, lfs_found):
+    def _write_manifest(self, artifact_dir: Path, lfs_found: bool) -> None:
         manifest = {
             "source_url": self.source_url,
             "archived_at": self.timestamp,
@@ -187,16 +209,21 @@ class GitArchiver:
 
 
 class GitUnpacker:
-    def __init__(self, zip_path, dest_dir=None, verbose=True):
-        self.zip_path = Path(zip_path).resolve()
-        self.verbose = verbose
+    def __init__(
+        self,
+        zip_path: Union[str, Path],
+        dest_dir: Optional[Union[str, Path]] = None,
+        verbose: bool = True,
+    ) -> None:
+        self.zip_path: Path = Path(zip_path).resolve()
+        self.verbose: bool = verbose
         if dest_dir:
-            self.output_dir = Path(dest_dir).resolve()
+            self.output_dir: Path = Path(dest_dir).resolve()
         else:
             # Default to extracting in current dir with zip name
-            self.output_dir = Path.cwd() / self.zip_path.stem
+            self.output_dir: Path = Path.cwd() / self.zip_path.stem
 
-    def unpack(self):
+    def unpack(self) -> Path:
         print(f"🔓 Unpacking archive: {self.zip_path}")
 
         if not self.zip_path.exists():
@@ -220,9 +247,9 @@ class GitUnpacker:
                 sys.exit(1)
 
             with open(manifest_path) as f:
-                manifest = json.load(f)
+                manifest: Dict[str, Any] = json.load(f)
 
-            repo_name = manifest.get("repo_name", "restored_repo")
+            repo_name: str = manifest.get("repo_name", "restored_repo")
             final_repo_path = self.output_dir / repo_name
 
             # 2. Clone from Bundle
@@ -247,7 +274,7 @@ class GitUnpacker:
             )
 
             # Fix origin remote to point to original URL instead of bundle path
-            original_url = manifest.get("source_url")
+            original_url: Optional[str] = manifest.get("source_url")
             if original_url:
                 Utils.run(
                     ["git", "remote", "set-url", "origin", original_url],
@@ -300,8 +327,14 @@ class GitUnpacker:
                     verbose=False,
                 )
 
-                sub_paths = {}  # module_name -> path
-                for line in result.stdout.splitlines():
+                sub_paths: Dict[str, str] = {}  # module_name -> path
+                # result can be CompeletedProcess or CalledProcessError
+                stdout = (
+                    result.stdout
+                    if isinstance(result, subprocess.CompletedProcess)
+                    else ""
+                )
+                for line in stdout.splitlines():
                     if "=" in line:
                         k, v = line.split("=", 1)
                         if k.startswith("submodule.") and k.endswith(".path"):
@@ -347,7 +380,7 @@ class GitUnpacker:
 
 class GitVerifier:
     @staticmethod
-    def verify(zip_path, verbose=True):
+    def verify(zip_path: Union[str, Path], verbose: bool = True) -> None:
         print(f"🔍 Verifying archive: {zip_path}")
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -380,7 +413,7 @@ class GitVerifier:
             print("\n✅ Verification Passed! The archive contains a valid repository.")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Git Bundler: Archival, Restoration, and Verification Tool"
     )

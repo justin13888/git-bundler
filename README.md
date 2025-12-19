@@ -4,14 +4,39 @@
 
 ## Usage
 
+Prerequisite: `git` and `git-lfs` has to be on system path.
+
+### 1. Archive a Repository
+
+Creates a complete, single-file zip archive of a git repository, including all branches, tags, LFS objects, and submodules.
+
 ```bash
-python git-bundle.py https://github.com/user/repo.git --out ./repo_bundle
+# Basic usage
+python git-bundle.py archive https://github.com/user/repo.git
+
+# Specify output directory and verify immediately
+python git-bundle.py archive https://github.com/user/repo.git --out ./backups --verify
 ```
 
-Notes:
+Note: You need read access to the repository URL.
 
-- Ensure that you simply have `git` and `git-lfs` installed on system.
-- You have read access to the repository URL.
+### 2. Unpack an Archive
+
+Restores a fully functional git repository from a bundle archive.
+
+```bash
+python git-bundle.py unpack repo_20251218.zip --dest ./my_projects
+```
+
+Note: The archive has a manifest file that also explains how to restore manually so this command is for convenience.
+
+### 3. Verify an Archive
+
+Checks the integrity of an existing archive without unpacking it permanently.
+
+```bash
+python git-bundle.py verify repo_20251218.zip
+```
 
 ## Features/Limitations of Script
 

@@ -1,78 +1,73 @@
-# Testing Strategy for Git Bundler
+# Testing Strategy
 
-This document outlines the plan to test the internal logic of `git-bundle.py`, ensuring robustness across various edge cases without relying on external network resources or heavy filesystem operations.
+## Test Suite Overview
 
-## 1. Test Architecture
+| Layer       | File                          | What it tests                                  | # Tests |
+| ----------- | ----------------------------- | ---------------------------------------------- | ------- |
+| Unit        | `tests/test_git_bundle.py`    | All functions and classes with mocked I/O      | 42      |
+| Integration | `tests/integration_test.py`   | Full archive→unpack→verify cycle on real repos | 11      |
+| Fixture     | `tests/generate_test_repo.py` | Helper: creates a repo with LFS + submodules   | —       |
+| Config      | `tests/conftest.py`           | Path setup for imports                         | —       |
 
-We will use Python's built-in `unittest` framework.
-Tests will be placed in a new directory `tests/` to keep the project clean.
+## Unit Tests (`test_git_bundle.py`)
 
-- **`tests/test_internals.py`**: Focuses on pure logic and method-level unit tests.
-- **`tests/test_flow.py`**: Focuses on the orchestration logic (`archive`, `unpack`) using extensive mocking.
+All tests use `pytest` with `pytest-mock`. No filesystem or network access (except `TestWriteManifest` which uses `tmp_path`).
 
-## 2. Component Testing Matrix
+### `run_command`
+- Success, failure (raises `GitBundlerError`), failure with `ignore_errors=True`, `capture_output=False`
+- Verbose logging verification, failure with empty stderr
 
-### A. `Utils` Class
+### `check_dependency`
+- Tool present, tool missing
 
-| Component          | Test Case                               | Expected Behavior                              |
-| ------------------ | --------------------------------------- | ---------------------------------------------- |
-| `check_dependency` | Tool exists                             | Returns silently                               |
-| `check_dependency` | Tool missing                            | Exits with status 1                            |
-| `run`              | Command success                         | Returns `CompletedProcess` with stdout         |
-| `run`              | Command failure (`ignore_errors=False`) | Exits with status 1                            |
-| `run`              | Command failure (`ignore_errors=True`)  | Returns error object/result with non-zero code |
-| `run`              | `capture_output=False`                  | Passthrough, returns result                    |
+### `parse_git_config`
+- Submodule URLs, paths, empty config, no matching section, malformed lines
+- Values containing `=` (URL query params), multiple dots in name
 
-### B. `GitArchiver` Class
+### `GitArchiver`
+- `_extract_repo_name()`: HTTPS with `.git`, without suffix, trailing slash, local path, bare name, SSH URLs
+- `_resolve_relative_url()`: absolute URL, `../` relative, `./` relative
+- `archive()`: gz flow, zstd flow (verifies correct `tar` flags)
+- `_write_manifest()`: JSON content verification (source_url, repo_name, version, timestamp)
+- `_handle_submodules()`: no `.gitmodules`, with entries (clone + LFS), relative URL resolution
 
-| Component               | Test Case           | Expected Behavior                                         |
-| ----------------------- | ------------------- | --------------------------------------------------------- |
-| `_extract_repo_name`    | URL ends in `.git`  | Strips suffix                                             |
-| `_extract_repo_name`    | URL no `.git`       | returns path tail                                         |
-| `_extract_repo_name`    | Trailing slash      | Handles gracefully                                        |
-| `_extract_repo_name`    | Local path          | Extracts directory name                                   |
-| `_resolve_relative_url` | Absolute URL        | Returns as is                                             |
-| `_resolve_relative_url` | Relative (`../`)    | Resolves against parent URL                               |
-| `_resolve_relative_url` | Relative (`./`)     | Resolves against parent URL                               |
-| `_handle_submodules`    | Valid `.gitmodules` | Parses names and URLs correctly                           |
-| `_handle_submodules`    | No submodules       | Returns gracefully                                        |
-| `_handle_submodules`    | Malformed config    | Survives parsing                                          |
-| `_handle_lfs`           | LFS objects present | Copies directory, returns True                            |
-| `_handle_lfs`           | No LFS objects      | Returns False                                             |
-| `archive`               | Logic Flow          | Calls clone -> lfs -> submodule -> bundle -> zip in order |
+### `GitUnpacker`
+- Happy path: tar extraction → clone → remote set-url
+- Error paths: missing archive, missing manifest, missing `repo.git`
+- `_restore_submodules()`: no `.gitmodules`, no source dir, happy path (init → config → update)
 
-### C. `GitUnpacker` Class
+### `GitVerifier`
+- Calls `git fsck --full`
+- Calls `git lfs fsck` when LFS directory is present
+- Calls `git submodule status` when `.gitmodules` present
 
-| Component | Test Case              | Expected Behavior                              |
-| --------- | ---------------------- | ---------------------------------------------- |
-| `unpack`  | Zip missing            | Exits with error                               |
-| `unpack`  | Missing Manifest       | Exits with error                               |
-| `unpack`  | Missing `.bundle` file | Exits with error                               |
-| `unpack`  | LFS restoration        | Checks manifest, copies LFS objects if flagged |
-| `unpack`  | Submodule restoration  | Parses config, initiates local bundle update   |
+## Integration Tests (`integration_test.py`)
 
-## 3. Mocking Strategy
+Uses `pytest` with a session-scoped fixture that generates a test repo (with LFS, submodules, branches, and tags) once.
 
-To verify "internals used on all possible CLI inputs" without actual execution:
+- `test_archive_unpack_roundtrip[gz]` / `[zstd]`: full cycle for each compression
+- `test_archive_with_verify`: `--verify` flag
+- `test_standalone_verify`: `verify` subcommand
+- `test_submodule_content_preserved`: file content check after restore
+- `test_lfs_content_preserved`: 1MB file size check after restore
+- `test_branch_preservation`: feature branch survives roundtrip
+- `test_tag_preservation`: annotated tag survives roundtrip
+- `test_simple_repo_roundtrip`: minimal repo with no LFS/submodules
+- `test_corrupted_archive`: truncated archive fails with error
+- `test_unpack_nonexistent_archive`: error message check
 
-1.  **Mock `subprocess.run` (`Utils.run`)**:
-    We will patch `git_bundle.Utils.run` (or `subprocess.run` if we test Utils separately).
-    *   *Scenario 1*: Simulate `git clone` success.
-    *   *Scenario 2*: Simulate `git config --list` returning specific submodule configurations (some valid, some weird).
-    *   *Scenario 3*: Simulate `git bundle create` failures.
+## Running
 
-2.  **Mock Filesystem**:
-    *   Use `tempfile.TemporaryDirectory` (already in code) but mocked to verify files are written to it.
-    *   Mock `pathlib.Path.exists`, `glob`, and `open` where necessary to simulate missing files or specific manifest contents.
+```bash
+# All tests
+uv run pytest -v
 
-## 4. Proposed New Files
+# With coverage
+uv run pytest -v --cov=git_bundle --cov-report=term-missing
 
-*   `tests/__init__.py`: (Empty)
-*   `tests/test_git_bundle.py`: The implementation of the above plan.
+# Unit tests only
+uv run pytest tests/test_git_bundle.py -v
 
-## 5. Next Steps
-
-1.  Confirm this plan meets the "thoroughly testing internals" requirement.
-2.  Create `tests/` directory.
-3.  Write the test suite.
-4.  Run tests and report coverage/issues.
+# Integration tests only
+uv run pytest tests/integration_test.py -v
+```

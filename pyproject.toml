@@ -1,0 +1,28 @@
+[project]
+name = "git-bundler"
+version = "0.1.0"
+description = "Complete Git archival tool with LFS and submodule support"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "pytest-mock>=3.14",
+    "ruff>=0.9",
+    "ty>=0.0.1a7",
+]
+
+[project.scripts]
+git-bundler = "git_bundle:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
